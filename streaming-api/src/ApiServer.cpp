@@ -99,7 +99,8 @@ void ApiServer::registerRoutes() {
     // Our own byte counter enforces maxUploadBytes (-> 413); httplib's limit is only a
     // hard safety net with 1 MiB of slack for multipart framing.
     svr.set_payload_max_length(static_cast<std::size_t>(config_.maxUploadBytes) + 1024 * 1024);
-    svr.set_keep_alive_max_count(1000);
+    svr.set_keep_alive_max_count(1);
+    svr.set_keep_alive_timeout(1);
 
     // Explicit HTTP worker pool.
     svr.new_task_queue = [] {
@@ -251,4 +252,6 @@ void ApiServer::registerRoutes() {
 }
 
 }  // namespace tecflix
+
+
 
