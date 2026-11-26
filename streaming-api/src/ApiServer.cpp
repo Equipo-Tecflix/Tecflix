@@ -77,7 +77,7 @@ ApiServer::ApiServer(const Config& config, StreamingService& service, VideoStora
                      std::function<std::string()> metricsRenderer)
     : config_(config), service_(service), storage_(storage), access_(access), metrics_(metrics),
       queue_(queue), metricsRenderer_(std::move(metricsRenderer)),
-      traces_(config.otlpEndpoint, config.nodeId),
+      traces_(config.otlpEndpoint, config.nodeId, config.traceSampleRate),
       server_(std::make_unique<httplib::Server>()) {
     registerRoutes();
 }
@@ -121,7 +121,11 @@ void ApiServer::registerRoutes() {
     svr.set_logger([this](const httplib::Request& req, const httplib::Response& res) {
         const double seconds = std::chrono::duration<double>(clock_type::now() - g_requestStart).count();
         const std::string route = routeLabel(req.method, req.path);
-        if (req.path != "/health" && req.path != "/metrics") traces_.record(req.method, route, res.status, g_traceStart);
+        if (req.path != "/health" && req.path != "/metrics") {
+            const bool segment = route == "/videos/{id}/{file}" && req.path.size() > 4 &&
+                req.path.compare(req.path.size() - 4, 4, ".m4s") == 0;
+            traces_.record(req.method, route, res.status, g_traceStart, segment);
+        }
         Labels labels{{"method", req.method}, {"route", route}, {"status", std::to_string(res.status)}};
         metrics_.incCounter("tecflix_http_requests_total", labels);
         metrics_.observe("tecflix_http_request_duration_seconds", {{"route", route}, {"method", req.method}}, seconds);
@@ -147,7 +151,7 @@ void ApiServer::registerRoutes() {
     });
 
     svr.Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
-        res.set_content(metricsRenderer_(), "text/plain; version=0.0.4");
+        res.set_content(metricsRenderer_() + traces_.renderMetrics(), "text/plain; version=0.0.4");
     });
 
     // ---- upload ----------------------------------------------------------------

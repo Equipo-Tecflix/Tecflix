@@ -32,7 +32,19 @@ TEST(OtelTrace, ExportsHttpSpansOnShutdown) {
         const auto start = std::chrono::system_clock::now();
         trace.record("GET", "/videos/:id/manifest.mpd", 200, start);
         trace.record("POST", "/videos/:id/upload", 500, start);
+        trace.record("GET", "/videos/{id}/{file}", 206, start, true);
+        EXPECT_NE(trace.renderMetrics().find("result=\"generated\"} 3"), std::string::npos);
     } // destructor drains queued spans before returning
+    {
+        OtelTrace trace("http://127.0.0.1:" + std::to_string(port), "test-node", 0.0);
+        const auto start = std::chrono::system_clock::now();
+        trace.record("GET", "/videos/{id}/{file}", 200, start, true);
+        trace.record("GET", "/videos/{id}/{file}", 206, start, true);
+        trace.record("GET", "/videos/{id}/{file}", 404, start, true);
+        trace.record("GET", "/videos/{id}/{file}", 200, start, false);
+        EXPECT_NE(trace.renderMetrics().find("result=\"sampled_out\"} 2"), std::string::npos);
+        EXPECT_NE(trace.renderMetrics().find("result=\"generated\"} 2"), std::string::npos);
+    }
     collector.stop();
     server.join();
     std::lock_guard<std::mutex> lock(mutex);
@@ -43,7 +55,7 @@ TEST(OtelTrace, ExportsHttpSpansOnShutdown) {
         EXPECT_EQ(resource.at("resource").at("attributes").at(1).at("value").at("stringValue"), "test-node");
         for (const auto& span : resource.at("scopeSpans").at(0).at("spans")) spans.push_back(span);
     }
-    ASSERT_EQ(spans.size(), 2u);
+    ASSERT_EQ(spans.size(), 5u);
     EXPECT_EQ(spans.at(0).at("name"), "GET /videos/:id/manifest.mpd");
     EXPECT_EQ(spans.at(0).at("status").at("code"), 0);
     EXPECT_EQ(spans.at(1).at("status").at("code"), 2);

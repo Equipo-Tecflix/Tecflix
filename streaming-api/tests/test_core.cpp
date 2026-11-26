@@ -224,6 +224,19 @@ static void setenv(const char* key, const char* value, int) { _putenv_s(key, val
 static void unsetenv(const char* key) { _putenv_s(key, ""); }
 #endif
 // ---------------------------------------------------------------- Config
+TEST(Config, TraceSamplingEnv) {
+    unsetenv("TECFLIX_TRACE_SAMPLE_RATE");
+    EXPECT_DOUBLE_EQ(Config::fromEnv().traceSampleRate, 1.0);
+    for (const auto* value : {"0", "0.10", "1"}) {
+        setenv("TECFLIX_TRACE_SAMPLE_RATE", value, 1);
+        EXPECT_DOUBLE_EQ(Config::fromEnv().traceSampleRate, std::stod(value));
+    }
+    for (const auto* value : {"nan", "inf", "-1", "1.01", "abc", "0.1abc"}) {
+        setenv("TECFLIX_TRACE_SAMPLE_RATE", value, 1);
+        EXPECT_DOUBLE_EQ(Config::fromEnv().traceSampleRate, 1.0);
+    }
+    unsetenv("TECFLIX_TRACE_SAMPLE_RATE");
+}
 TEST(Config, DefaultsAndEnvOverrides) {
     unsetenv("TECFLIX_PORT");
     EXPECT_EQ(Config::fromEnv().port, 8083);

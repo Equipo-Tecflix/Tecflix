@@ -1,6 +1,7 @@
 #include "streaming/Config.hpp"
 
 #include <cstdlib>
+#include <cmath>
 #include <sstream>
 
 namespace tecflix {
@@ -31,8 +32,13 @@ Config Config::fromEnv() {
     if (c.maxTranscodeJobs == 0) c.maxTranscodeJobs = 1;
     c.segmentSeconds = static_cast<int>(envNumber("TECFLIX_SEGMENT_SECONDS", c.segmentSeconds));
     c.maxUploadBytes = envNumber("TECFLIX_MAX_UPLOAD_BYTES", c.maxUploadBytes);
-    const auto cacheMiB = envNumber("TECFLIX_SEGMENT_CACHE_MIB", 64);
-    c.segmentCacheBytes = static_cast<std::size_t>(cacheMiB <= 1024 ? cacheMiB : 64) * 1024 * 1024;
+    const auto cacheMiB = envNumber("TECFLIX_SEGMENT_CACHE_MIB", 0);
+    c.segmentCacheBytes = static_cast<std::size_t>(cacheMiB <= 1024 ? cacheMiB : 0) * 1024 * 1024;
+    const auto rate = env("TECFLIX_TRACE_SAMPLE_RATE", "1.0");
+    char* end = nullptr;
+    const double parsed = std::strtod(rate.c_str(), &end);
+    if (end != rate.c_str() && *end == '\0' && std::isfinite(parsed) && parsed >= 0 && parsed <= 1)
+        c.traceSampleRate = parsed;
     c.otlpEndpoint = env("TECFLIX_OTLP_ENDPOINT", "");
     c.corsOrigin = env("TECFLIX_CORS_ORIGIN", c.corsOrigin);
     c.metadataUrl = env("TECFLIX_METADATA_URL", "");
