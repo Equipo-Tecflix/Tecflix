@@ -1,4 +1,4 @@
-#include "streaming/ApiServer.hpp"
+﻿#include "streaming/ApiServer.hpp"
 
 #include <chrono>
 #include <algorithm>
@@ -17,6 +17,7 @@ using json = nlohmann::json;
 using clock_type = std::chrono::steady_clock;
 
 thread_local clock_type::time_point g_requestStart;
+thread_local std::chrono::system_clock::time_point g_traceStart;
 
 constexpr const char* kIdPattern = "([A-Za-z0-9_-]{1,64})";
 constexpr const char* kFilePattern = "([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})";
@@ -76,6 +77,7 @@ ApiServer::ApiServer(const Config& config, StreamingService& service, VideoStora
                      std::function<std::string()> metricsRenderer)
     : config_(config), service_(service), storage_(storage), access_(access), metrics_(metrics),
       queue_(queue), metricsRenderer_(std::move(metricsRenderer)),
+      traces_(config.otlpEndpoint, config.nodeId),
       server_(std::make_unique<httplib::Server>()) {
     registerRoutes();
 }
@@ -99,9 +101,15 @@ void ApiServer::registerRoutes() {
     svr.set_payload_max_length(static_cast<std::size_t>(config_.maxUploadBytes) + 1024 * 1024);
     svr.set_keep_alive_max_count(1000);
 
+    // Explicit HTTP worker pool.
+    svr.new_task_queue = [] {
+        return new httplib::ThreadPool(32);
+    };
+
     // ---- cross-cutting: timing, metrics, CORS --------------------------------
     svr.set_pre_routing_handler([](const httplib::Request&, httplib::Response&) {
         g_requestStart = clock_type::now();
+        g_traceStart = std::chrono::system_clock::now();
         return httplib::Server::HandlerResponse::Unhandled;
     });
     svr.set_post_routing_handler([this](const httplib::Request&, httplib::Response& res) {
@@ -112,6 +120,7 @@ void ApiServer::registerRoutes() {
     svr.set_logger([this](const httplib::Request& req, const httplib::Response& res) {
         const double seconds = std::chrono::duration<double>(clock_type::now() - g_requestStart).count();
         const std::string route = routeLabel(req.method, req.path);
+        if (req.path != "/health" && req.path != "/metrics") traces_.record(req.method, route, res.status, g_traceStart);
         Labels labels{{"method", req.method}, {"route", route}, {"status", std::to_string(res.status)}};
         metrics_.incCounter("tecflix_http_requests_total", labels);
         metrics_.observe("tecflix_http_request_duration_seconds", {{"route", route}, {"method", req.method}}, seconds);
@@ -242,3 +251,4 @@ void ApiServer::registerRoutes() {
 }
 
 }  // namespace tecflix
+
