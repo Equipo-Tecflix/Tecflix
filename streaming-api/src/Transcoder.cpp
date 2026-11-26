@@ -29,7 +29,7 @@ std::vector<std::string> FfmpegTranscoder::buildArgs(const TranscodeRequest& r) 
         "-f", "dash", "-seg_duration", seg, "-use_template", "1", "-use_timeline", "1",
         "-init_seg_name", "init-$RepresentationID$.m4s",
         "-media_seg_name", "chunk-$RepresentationID$-$Number%05d$.m4s",
-        (r.outputDir / "manifest.mpd").string(),
+        (r.outputDir / "manifest.mpd").generic_string(),
     };
 }
 
