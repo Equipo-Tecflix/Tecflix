@@ -98,6 +98,11 @@ void ApiServer::registerRoutes() {
     // hard safety net with 1 MiB of slack for multipart framing.
     svr.set_payload_max_length(static_cast<std::size_t>(config_.maxUploadBytes) + 1024 * 1024);
     svr.set_keep_alive_max_count(1000);
+    
+    // Explicit HTTP worker pool to avoid connection starvation.
+    svr.new_task_queue = [] {
+        return new httplib::ThreadPool(32);
+    };
 
     // ---- cross-cutting: timing, metrics, CORS --------------------------------
     svr.set_pre_routing_handler([](const httplib::Request&, httplib::Response&) {
