@@ -24,14 +24,17 @@ HttpReplicator::HttpReplicator(std::vector<std::string> peers, std::string token
 bool HttpReplicator::replicate(const std::string& id) {
     bool allOk = true;
     const auto files = storage_.dashFilesForReplication(id);
+    if (files.empty() || files.back() != "manifest.mpd") return false;
     for (const auto& peer : peers_) {
         httplib::Client client(peer);
+        client.set_keep_alive(true);
         client.set_connection_timeout(3);
         client.set_read_timeout(60);
         client.set_write_timeout(60);
         httplib::Headers headers{{"X-Tecflix-Token", token_}};
         for (const auto& file : files) {
             auto data = readFile(storage_.dashDir(id) / file);
+            if (data.empty()) { allOk = false; break; }
             auto res = client.Put("/internal/replicate/" + id + "/" + file, headers, data,
                                   "application/octet-stream");
             if (!res || res->status != 200) {

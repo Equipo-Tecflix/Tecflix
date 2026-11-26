@@ -37,7 +37,7 @@ Sin la variable, todo se permite (modo desarrollo).
 Las interfaces permiten pruebas unitarias con *fakes* (cobertura ≥ 90 %).
 
 ## 5. Seguridad / buenas prácticas
-- FFmpeg se lanza con `posix_spawn` y vector de argumentos, **sin shell** (sin inyección de comandos).
+- FFmpeg se lanza con `posix_spawn` en Linux o `CreateProcessW` en Windows y argumentos escapados, **sin shell** (sin inyección de comandos).
 - Todo id y nombre de archivo se valida (`VideoStorage`) → sin *path traversal*.
 - Subidas en streaming a disco (no se carga el video en RAM); límite de tamaño configurable.
 - Escrituras de réplicas atómicas (archivo temporal + `rename`).
@@ -58,11 +58,19 @@ Las interfaces permiten pruebas unitarias con *fakes* (cobertura ≥ 90 %).
 Métricas: `tecflix_http_requests_total`, `tecflix_http_request_duration_seconds` (histograma por ruta),
 `tecflix_bytes_served_total`, `tecflix_transcode_duration_seconds`, `tecflix_transcodes_total`,
 `tecflix_transcode_queue_size`, `tecflix_uploads_total`, `tecflix_replications_total`.
-**Pendiente (requisito del curso):** implementar `OtelMetrics : IMetrics` con `opentelemetry-cpp`
-(exportador OTLP o Prometheus) y trazas por petición. El resto del código no cambia.
+El OpenTelemetry Collector Contrib recibe métricas por su receptor Prometheus (scrape de `/metrics`) y trazas HTTP independientes por OTLP/HTTP JSON (`TECFLIX_OTLP_ENDPOINT`). Exportación de trazas en lotes, cola de 2048 entradas, sin bloquear el servidor. Configuraciones en `deploy/observability/`. No incluye propagación de contexto distribuido ni garantiza entrega de telemetría si el collector falla.
 
 ## 8. Configuración (variables de entorno)
 `TECFLIX_PORT` (8083), `TECFLIX_NODE_ID`, `TECFLIX_STORAGE_DIR` (./storage), `TECFLIX_FFMPEG`,
 `TECFLIX_MAX_JOBS` (2), `TECFLIX_SEGMENT_SECONDS` (4), `TECFLIX_MAX_UPLOAD_BYTES` (2 GiB),
 `TECFLIX_CORS_ORIGIN` (*), `TECFLIX_METADATA_URL`, `TECFLIX_PEERS` (lista separada por comas),
-`TECFLIX_INTERNAL_TOKEN`.
+`TECFLIX_INTERNAL_TOKEN`, `TECFLIX_OTLP_ENDPOINT` (opcional).
+
+## 9. Verificación y V2.0
+Scripts PowerShell en `scripts/`, pruebas k6 de carga constante y Playwright de reproducción real. La CI exige 90% de cobertura de las fuentes de la biblioteca en Linux; se excluye `main.cpp` y la rama Windows no se mide. Para tolerar la caída del balanceador, desplegar uno por máquina y configurar URLs principal y alternativa en el cliente Shaka (demo incluido). La integración del frontend final y la redundancia de las otras APIs requieren coordinación del equipo. Replicación inicial de videos con reintentos inmediatos, reparación manual posterior; no es almacenamiento distribuido con consenso ni tolera pérdida del origen antes de completar una réplica.
+
+### V2: caché de segmentos en memoria (optimización experimental)
+
+`TECFLIX_SEGMENT_CACHE_MIB` configura el límite de datos retenidos por nodo (64 por defecto; 0 deshabilita; valores superiores a 1024 vuelven a 64). Solo archivos `.m4s` de hasta 8 MiB y no vacíos son elegibles; máximo 4096 entradas, reemplazo LRU. El resto utiliza el proveedor original de archivos. La autorización, estado Ready y existencia del archivo se comprueban antes de servirlo. Las respuestas conservan HTTP Range. Los datos son inmutables y compartidos entre respuestas; el mutex no se mantiene durante el envío. Las mutaciones a través de VideoStorage invalidan las entradas del video (incluida la replicación). No se admite modificar archivos DASH externamente mientras se sirve el video. El límite de datos retenidos no incluye metadatos, asignaciones temporales ni referencias de respuestas en curso. Un fallo de caché lee el archivo bajo el mutex; medir contención con cargas de catálogo diverso.
+
+Métrica: `tecflix_segment_cache_requests_total{result="hit|miss|bypass"}` (miss = carga exitosa, bypass = ruta de archivo original). Comparar el mismo binario con 0 y 64 MiB, misma carga, telemetría y condiciones. El beneficio no está validado hasta realizar las pruebas.

@@ -23,7 +23,11 @@ int main() {
     using namespace tecflix;
     const Config config = Config::fromEnv();
 
-    VideoStorage storage(config.storageDir);
+    if (!config.peers.empty() && config.internalToken.empty()) {
+        std::cerr << "TECFLIX_INTERNAL_TOKEN required for replication\n";
+        return 1;
+    }
+    VideoStorage storage(config.storageDir, config.segmentCacheBytes);
     PrometheusMetrics metrics;
     FfmpegTranscoder transcoder(config.ffmpegPath);
 
@@ -47,6 +51,7 @@ int main() {
     std::cout << "[" << config.nodeId << "] Tecflix streaming API on :" << config.port
               << " storage=" << config.storageDir << " peers=" << config.peers.size()
               << " auth=" << (config.metadataUrl.empty() ? "off" : "metadata-api")
+              << " cache_bytes=" << config.segmentCacheBytes
               << " requeued=" << requeued << std::endl;
 
     if (!server.listen()) {

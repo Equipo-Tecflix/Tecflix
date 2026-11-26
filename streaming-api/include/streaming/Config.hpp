@@ -16,6 +16,8 @@ struct Config {
     std::size_t maxTranscodeJobs = 2;     // concurrent ffmpeg processes
     int segmentSeconds = 4;               // DASH segment duration
     std::uint64_t maxUploadBytes = 2ULL * 1024 * 1024 * 1024;  // 2 GiB
+    std::size_t segmentCacheBytes = 64 * 1024 * 1024; // 0 disables application cache
+    std::string otlpEndpoint; // optional http://collector:4318
     std::string corsOrigin = "*";
 
     // Authorization: when metadataUrl is empty every request is allowed (dev mode).

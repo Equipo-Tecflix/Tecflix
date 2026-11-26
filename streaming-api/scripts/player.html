@@ -9,6 +9,7 @@
 <body>
   <h1>Prueba de reproducción (Shaka Player)</h1>
   <label>API: <input id="api" size="30" value="http://localhost:8083"></label>
+  <label>API alternativa (opcional): <input id="backup" size="30"></label><br>
   <label>Video id: <input id="vid" size="16" value="demo1"></label>
   <button id="go">Reproducir</button>
   <p id="msg"></p>
@@ -18,10 +19,22 @@
       const msg = document.getElementById('msg');
       shaka.polyfill.installAll();
       if (!shaka.Player.isBrowserSupported()) { msg.textContent = 'Navegador no soportado'; return; }
+      if (window.activePlayer) await window.activePlayer.destroy();
       const player = new shaka.Player();
+      window.activePlayer = player;
       await player.attach(document.getElementById('video'));
       player.addEventListener('error', e => msg.textContent = 'Error Shaka: ' + e.detail.code);
-      const url = `${document.getElementById('api').value}/videos/${document.getElementById('vid').value}/manifest.mpd`;
+      const base = document.getElementById('api').value.replace(/\/$/, '');
+      const backup = document.getElementById('backup').value.replace(/\/$/, '');
+      if (backup) player.getNetworkingEngine().registerRequestFilter((type, request) => {
+        if (![shaka.net.NetworkingEngine.RequestType.MANIFEST, shaka.net.NetworkingEngine.RequestType.SEGMENT].includes(type)) return;
+        const original = request.uris.slice();
+        for (const uri of original) {
+          if (uri.startsWith(base + '/')) request.uris.push(backup + uri.slice(base.length));
+          else if (uri.startsWith(backup + '/')) request.uris.push(base + uri.slice(backup.length));
+        }
+      });
+      const url = `${base}/videos/${document.getElementById('vid').value}/manifest.mpd`;
       try { await player.load(url); msg.textContent = 'Reproduciendo ' + url; }
       catch (e) { msg.textContent = 'No se pudo cargar: ' + (e.code || e); }
     };

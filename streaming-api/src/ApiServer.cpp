@@ -1,4 +1,4 @@
-﻿#include "streaming/ApiServer.hpp"
+#include "streaming/ApiServer.hpp"
 
 #include <chrono>
 #include <algorithm>
@@ -229,6 +229,23 @@ void ApiServer::registerRoutes() {
         const bool manifest = req.matches[3] == "mpd";
         res.set_header("Cache-Control", manifest ? "private, max-age=60" : "private, max-age=3600");
         res.set_header("Accept-Ranges", "bytes");
+        if (req.matches[3] == "m4s") {
+            auto cached = storage_.cachedSegment(id, file);
+            using CR = VideoStorage::CacheResult;
+            const char* result = cached.result == CR::Hit ? "hit" :
+                                 cached.result == CR::Miss ? "miss" : "bypass";
+            metrics_.incCounter("tecflix_segment_cache_requests_total", {{"result", result}});
+            if (cached.data) {
+                const auto size = cached.data->size();
+                res.set_content_provider(size, contentTypeFor(file),
+                    [data = std::move(cached.data), this](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+                        const auto count = std::min(length, std::size_t(64 * 1024));
+                        metrics_.incCounter("tecflix_bytes_served_total", {}, static_cast<double>(count));
+                        return sink.write(data->data() + offset, count);
+                    });
+                return;
+            }
+        }
         sendFile(res, *path, contentTypeFor(file), metrics_);
     });
 

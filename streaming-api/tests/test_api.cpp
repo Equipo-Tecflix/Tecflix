@@ -337,3 +337,32 @@ TEST(AllowAllAccessChecker, AllowsEverything) {
     AllowAllAccessChecker a;
     EXPECT_TRUE(a.allowed("x", Permission::Write, ""));
 }
+
+TEST(Api, SegmentCachePreservesRangeAndInvalidatesReplicas) {
+    Node n;
+    auto c = n.client();
+    const httplib::Headers h{{"X-Tecflix-Token", "secret"}};
+    const std::string segment = "/videos/cache/a.m4s";
+    ASSERT_EQ(c.Put("/internal/replicate/cache/a.m4s", h, "abcdef", "application/octet-stream")->status, 200);
+    ASSERT_EQ(c.Put("/internal/replicate/cache/manifest.mpd", h, "<MPD/>", "application/octet-stream")->status, 200);
+    auto first = c.Get(segment);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first->body, "abcdef");
+    auto range = c.Get(segment, {{"Range", "bytes=1-3"}});
+    ASSERT_TRUE(range);
+    EXPECT_EQ(range->status, 206);
+    EXPECT_EQ(range->body, "bcd");
+    EXPECT_EQ(range->get_header_value("Content-Range"), "bytes 1-3/6");
+    auto metrics = c.Get("/metrics");
+    ASSERT_TRUE(metrics);
+    EXPECT_NE(metrics->body.find("tecflix_segment_cache_requests_total{result=\"miss\"} 1"), std::string::npos);
+    EXPECT_NE(metrics->body.find("tecflix_segment_cache_requests_total{result=\"hit\"} 1"), std::string::npos);
+    ASSERT_EQ(c.Put("/internal/replicate/cache/a.m4s", h, "UVWXYZ", "application/octet-stream")->status, 200);
+    auto replaced = c.Get(segment);
+    ASSERT_TRUE(replaced);
+    EXPECT_EQ(replaced->body, "UVWXYZ");
+    ASSERT_EQ(c.Delete("/internal/replicate/cache", h)->status, 200);
+    auto removed = c.Get(segment);
+    ASSERT_TRUE(removed);
+    EXPECT_EQ(removed->status, 404);
+}
