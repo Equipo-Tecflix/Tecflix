@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <fstream>
 #include <thread>
@@ -171,12 +172,13 @@ TEST(Transcoder, BuildsArgumentVectorWithoutShell) {
     auto args = t.buildArgs(r);
     EXPECT_EQ(args.front(), "/usr/bin/ffmpeg");
     // The hostile file name stays ONE argument, untouched.
-    EXPECT_NE(std::find(args.begin(), args.end(), "/tmp/in put; rm -rf x.mp4"), args.end());
+    EXPECT_NE(std::find(args.begin(), args.end(), r.input.string()), args.end());
     EXPECT_NE(std::find(args.begin(), args.end(), "dash"), args.end());
     EXPECT_NE(std::find(args.begin(), args.end(), "6"), args.end());
-    EXPECT_EQ(args.back(), "/tmp/out/manifest.mpd");
+    EXPECT_EQ(std::filesystem::path(args.back()), r.outputDir / "manifest.mpd");
 }
 
+#ifndef _WIN32
 namespace {
 std::string writeScript(const std::filesystem::path& dir, const std::string& name, const std::string& body) {
     auto p = dir / name;
@@ -189,7 +191,7 @@ std::string writeScript(const std::filesystem::path& dir, const std::string& nam
 TEST(Transcoder, SuccessAndFailureExitCodes) {
     TempDir tmp;
     TranscodeRequest r{tmp.path / "in", tmp.path, tmp.path / "log", 4};
-    EXPECT_TRUE(FfmpegTranscoder(writeScript(tmp.path, "ok.sh", "exit 0")).transcode(r).ok);
+    EXPECT_TRUE(FfmpegTranscoder(writeScript(tmp.path, "ok.sh", "printf init > \"$(dirname \"$0\")/init-0.m4s\"; printf chunk > \"$(dirname \"$0\")/chunk-0-00001.m4s\"; exit 0")).transcode(r).ok);
     auto bad = FfmpegTranscoder(writeScript(tmp.path, "bad.sh", "echo oops >&2; exit 3")).transcode(r);
     EXPECT_FALSE(bad.ok);
     EXPECT_EQ(bad.exitCode, 3);
@@ -209,6 +211,18 @@ TEST(Transcoder, MissingBinaryAndKilledProcess) {
     EXPECT_EQ(killed.error, "ffmpeg terminated by signal");
 }
 
+#else
+TEST(Transcoder, MissingBinaryWindows) {
+    TempDir tmp;
+    TranscodeRequest r{tmp.path / "in", tmp.path, tmp.path / "log", 4};
+    EXPECT_FALSE(FfmpegTranscoder((tmp.path / "missing.exe").string()).transcode(r).ok);
+}
+#endif
+
+#ifdef _WIN32
+static void setenv(const char* key, const char* value, int) { _putenv_s(key, value); }
+static void unsetenv(const char* key) { _putenv_s(key, ""); }
+#endif
 // ---------------------------------------------------------------- Config
 TEST(Config, DefaultsAndEnvOverrides) {
     unsetenv("TECFLIX_PORT");
