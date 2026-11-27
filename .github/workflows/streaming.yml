@@ -1,0 +1,136 @@
+
+name: Streaming API
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows - Build and unit tests
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          if ($LASTEXITCODE -ne 0) {
+              throw "FFmpeg installation failed"
+          }
+
+      - name: Build and run unit tests
+        shell: pwsh
+        run: |
+          ffmpeg -version
+          ./scripts/build-streaming.ps1
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: streaming-windows
+          path: build-streaming/Release/tecflix_streaming.exe
+
+  linux-coverage-functional:
+    name: Linux - Coverage and functional tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg gcovr
+
+      - name: Configure CMake
+        run: cmake -S streaming-api -B build -DTECFLIX_COVERAGE=ON
+
+      - name: Build Streaming API
+        run: cmake --build build -j2
+
+      - name: Run unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Verify coverage
+        run: |
+          cd streaming-api
+          gcovr --root . \
+            --filter 'src/' \
+            --exclude 'src/main.cpp' \
+            --html-details ../coverage.html \
+            --xml ../coverage.xml \
+            --fail-under-line 90 \
+            ../build
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streaming-coverage
+          path: |
+            coverage*.html
+            coverage.xml
+
+      - name: Install Playwright
+        working-directory: functional-tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run functional tests
+        run: |
+          mkdir -p ci-logs
+
+          TECFLIX_PORT=8083 \
+          TECFLIX_NODE_ID=A \
+          TECFLIX_STORAGE_DIR="$RUNNER_TEMP/node-a" \
+          TECFLIX_PEERS=http://127.0.0.1:8084 \
+          TECFLIX_INTERNAL_TOKEN=ci-only \
+          ./build/tecflix_streaming > ci-logs/node-a.log 2>&1 &
+          A=$!
+
+          TECFLIX_PORT=8084 \
+          TECFLIX_NODE_ID=B \
+          TECFLIX_STORAGE_DIR="$RUNNER_TEMP/node-b" \
+          TECFLIX_PEERS=http://127.0.0.1:8083 \
+          TECFLIX_INTERNAL_TOKEN=ci-only \
+          ./build/tecflix_streaming > ci-logs/node-b.log 2>&1 &
+          B=$!
+
+          trap 'kill "$A" "$B" 2>/dev/null || true' EXIT
+
+          curl --retry 15 --retry-connrefused --fail http://127.0.0.1:8083/health
+          curl --retry 15 --retry-connrefused --fail http://127.0.0.1:8084/health
+
+          cd functional-tests
+
+          BASE_URL=http://127.0.0.1:8083 \
+          PEER_URL=http://127.0.0.1:8084 \
+          npm test
+
+      - name: Upload functional test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streaming-functional-results
+          path: |
+            ci-logs/
+            functional-tests/test-results/
+
+      - name: Upload Linux executable
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streaming-linux
+          path: build/tecflix_streaming
