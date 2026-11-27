@@ -55,6 +55,7 @@ export default function () {
   if (mpd.status !== 200) { sleep(1); return; }
   const init = http.get(`${BASE}/videos/${VIDEO}/init-${TRACK}.m4s`);
   check(init, { 'init 200': r => r.status === 200 });
+  if (init.status !== 200) rejected.add(1);
   for (let n = 1; n <= SEGMENTS; n++) {
     const seg = http.get(`${BASE}/videos/${VIDEO}/chunk-${TRACK}-${String(n).padStart(5, '0')}.m4s`);
     segmentLatency.add(seg.timings.duration);
