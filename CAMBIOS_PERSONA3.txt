@@ -1,0 +1,34 @@
+Base: Tecflix-main.zip (commit 0aead7ec616f508faf5a42d40c18239a96a69375)
+No incluye modificaciones al código de metadata de la raíz.
+
+NUEVO  .github/workflows/streaming.yml
+MODIFICADO  .gitignore
+NUEVO  GUIA_PERSONA3.md
+NUEVO  SPEC.md
+NUEVO  deploy/observability/otel-collector.yaml
+NUEVO  deploy/observability/prometheus.yml
+NUEVO  functional-tests/package.json
+NUEVO  functional-tests/playwright.config.js
+NUEVO  functional-tests/streaming.spec.js
+MODIFICADO  load-tests/streaming.js
+NUEVO  scripts/build-streaming.ps1
+NUEVO  scripts/compare-load.ps1
+NUEVO  scripts/demo-video.ps1
+NUEVO  scripts/repair-replica.ps1
+NUEVO  scripts/run-balancer.ps1
+NUEVO  scripts/run-streaming.ps1
+MODIFICADO  streaming-api/CMakeLists.txt
+MODIFICADO  streaming-api/SPEC.md
+MODIFICADO  streaming-api/include/streaming/ApiServer.hpp
+MODIFICADO  streaming-api/include/streaming/Config.hpp
+NUEVO  streaming-api/include/streaming/OtelTrace.hpp
+MODIFICADO  streaming-api/scripts/player.html
+MODIFICADO  streaming-api/src/ApiServer.cpp
+MODIFICADO  streaming-api/src/Config.cpp
+NUEVO  streaming-api/src/OtelTrace.cpp
+MODIFICADO  streaming-api/src/Replicator.cpp
+MODIFICADO  streaming-api/src/Transcoder.cpp
+MODIFICADO  streaming-api/src/VideoStorage.cpp
+MODIFICADO  streaming-api/src/main.cpp
+MODIFICADO  streaming-api/tests/test_core.cpp
+MODIFICADO  streaming-api/tests/test_support.hpp
