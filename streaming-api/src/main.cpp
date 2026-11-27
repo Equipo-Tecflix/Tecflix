@@ -48,6 +48,7 @@ int main() {
     std::signal(SIGTERM, onSignal);
 
     const std::size_t requeued = service.recover();
+    service.startRecovery();
     std::cout << "[" << config.nodeId << "] Tecflix streaming API on :" << config.port
               << " storage=" << config.storageDir << " peers=" << config.peers.size()
               << " auth=" << (config.metadataUrl.empty() ? "off" : "metadata-api")
@@ -55,12 +56,16 @@ int main() {
               << " file_chunk_bytes=" << config.fileChunkBytes
               << " trace_sample_rate=" << config.traceSampleRate
               << " traces=" << (config.otlpEndpoint.empty() ? "off" : "on")
+              << " replication_retry_seconds=" << config.replicationRetrySeconds
               << " requeued=" << requeued << std::endl;
 
     if (!server.listen()) {
         std::cerr << "cannot bind port " << config.port << std::endl;
+        service.stopRecovery();
+        queue.shutdown();
         return 1;
     }
+    service.stopRecovery();
     queue.shutdown();
     return 0;
 }

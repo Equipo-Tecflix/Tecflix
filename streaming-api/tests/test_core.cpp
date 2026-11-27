@@ -239,14 +239,14 @@ TEST(Config, TraceSamplingEnv) {
 }
 TEST(Config, FileChunkEnv) {
     unsetenv("TECFLIX_FILE_CHUNK_KIB");
-    EXPECT_EQ(Config::fromEnv().fileChunkBytes, 64u * 1024);
+    EXPECT_EQ(Config::fromEnv().fileChunkBytes, 1024u * 1024);
     for (const auto* value : {"64", "128", "256", "512", "1024"}) {
         setenv("TECFLIX_FILE_CHUNK_KIB", value, 1);
         EXPECT_EQ(Config::fromEnv().fileChunkBytes, std::stoul(value) * 1024);
     }
     for (const auto* value : {"0", "-1", "63", "1025", "abc", "256abc"}) {
         setenv("TECFLIX_FILE_CHUNK_KIB", value, 1);
-        EXPECT_EQ(Config::fromEnv().fileChunkBytes, 64u * 1024);
+        EXPECT_EQ(Config::fromEnv().fileChunkBytes, 1024u * 1024);
     }
     unsetenv("TECFLIX_FILE_CHUNK_KIB");
 }
@@ -266,4 +266,16 @@ TEST(Config, DefaultsAndEnvOverrides) {
     EXPECT_EQ(c.maxUploadBytes, 2ULL * 1024 * 1024 * 1024);  // invalid -> default
     for (auto v : {"TECFLIX_PORT", "TECFLIX_PEERS", "TECFLIX_MAX_JOBS", "TECFLIX_NODE_ID", "TECFLIX_MAX_UPLOAD_BYTES"})
         unsetenv(v);
+}
+
+TEST(Config, ReplicationRetrySecondsEnv) {
+    unsetenv("TECFLIX_REPLICATION_RETRY_SECONDS");
+    EXPECT_EQ(Config::fromEnv().replicationRetrySeconds, 5);
+    setenv("TECFLIX_REPLICATION_RETRY_SECONDS", "2", 1);
+    EXPECT_EQ(Config::fromEnv().replicationRetrySeconds, 2);
+    for (const auto* value : {"0", "301", "abc", "-1"}) {
+        setenv("TECFLIX_REPLICATION_RETRY_SECONDS", value, 1);
+        EXPECT_EQ(Config::fromEnv().replicationRetrySeconds, 5);
+    }
+    unsetenv("TECFLIX_REPLICATION_RETRY_SECONDS");
 }
