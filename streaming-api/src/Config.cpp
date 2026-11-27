@@ -34,7 +34,10 @@ Config Config::fromEnv() {
     c.maxUploadBytes = envNumber("TECFLIX_MAX_UPLOAD_BYTES", c.maxUploadBytes);
     const auto cacheMiB = envNumber("TECFLIX_SEGMENT_CACHE_MIB", 0);
     c.segmentCacheBytes = static_cast<std::size_t>(cacheMiB <= 1024 ? cacheMiB : 0) * 1024 * 1024;
-    const auto rate = env("TECFLIX_TRACE_SAMPLE_RATE", "1.0");
+    const auto chunkKiB = envNumber("TECFLIX_FILE_CHUNK_KIB", 64);
+    if (chunkKiB >= 64 && chunkKiB <= 1024)
+        c.fileChunkBytes = static_cast<std::size_t>(chunkKiB) * 1024;
+    const auto rate = env("TECFLIX_TRACE_SAMPLE_RATE", "0.10");
     char* end = nullptr;
     const double parsed = std::strtod(rate.c_str(), &end);
     if (end != rate.c_str() && *end == '\0' && std::isfinite(parsed) && parsed >= 0 && parsed <= 1)

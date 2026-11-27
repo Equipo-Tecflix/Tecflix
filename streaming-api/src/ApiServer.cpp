@@ -33,19 +33,18 @@ std::string contentTypeFor(const std::string& file) {
     return "video/mp4";
 }
 
-/// Streams a file in 64 KiB chunks. The size is declared up-front so httplib can
+/// Streams a file in configurable chunks. The size is declared up-front so httplib can
 /// answer "Range: bytes=a-b" requests (206 Partial Content) by itself.
 void sendFile(httplib::Response& res, const std::filesystem::path& path, const std::string& type,
-              IMetrics& metrics) {
+              IMetrics& metrics, std::size_t chunkBytes) {
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
     auto in = std::make_shared<std::ifstream>(path, std::ios::binary);
     if (ec || !*in) return sendJson(res, 404, {{"error", "file not found"}});
     res.set_content_provider(
         static_cast<std::size_t>(size), type,
-        [in, &metrics](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
-            constexpr std::size_t kChunk = 64 * 1024;
-            std::vector<char> buffer(std::min(length, kChunk));
+        [in, &metrics, chunkBytes](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+            std::vector<char> buffer(std::min(length, chunkBytes));
             in->clear();
             in->seekg(static_cast<std::streamoff>(offset));
             in->read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
@@ -250,7 +249,7 @@ void ApiServer::registerRoutes() {
                 return;
             }
         }
-        sendFile(res, *path, contentTypeFor(file), metrics_);
+        sendFile(res, *path, contentTypeFor(file), metrics_, config_.fileChunkBytes);
     });
 
     // ---- internal replication (V2.0) -------------------------------------------

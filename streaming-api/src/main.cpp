@@ -52,6 +52,7 @@ int main() {
               << " storage=" << config.storageDir << " peers=" << config.peers.size()
               << " auth=" << (config.metadataUrl.empty() ? "off" : "metadata-api")
               << " cache_bytes=" << config.segmentCacheBytes
+              << " file_chunk_bytes=" << config.fileChunkBytes
               << " trace_sample_rate=" << config.traceSampleRate
               << " traces=" << (config.otlpEndpoint.empty() ? "off" : "on")
               << " requeued=" << requeued << std::endl;

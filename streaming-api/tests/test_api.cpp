@@ -31,17 +31,19 @@ struct Node {
     std::thread thread;
     int port = 0;
 
-    static Config makeConfig(const std::string& id, std::uint64_t maxUpload) {
+    static Config makeConfig(const std::string& id, std::uint64_t maxUpload, std::size_t chunkBytes = 64 * 1024) {
         Config c;
         c.nodeId = id;
         c.internalToken = "secret";
         c.maxUploadBytes = maxUpload;
+        c.fileChunkBytes = chunkBytes;
         return c;
     }
 
     explicit Node(const std::string& id = "n1", std::uint64_t maxUpload = 10 * 1024 * 1024,
-                  IReplicator* rep = nullptr, IAccessChecker* acc = nullptr)
-        : config(makeConfig(id, maxUpload)), storage(tmp.path),
+                  IReplicator* rep = nullptr, IAccessChecker* acc = nullptr,
+                  std::size_t chunkBytes = 64 * 1024, std::size_t cacheBytes = 64 * 1024 * 1024)
+        : config(makeConfig(id, maxUpload, chunkBytes)), storage(tmp.path, cacheBytes),
           ownedReplicator(rep ? nullptr : std::make_unique<NullReplicator>()),
           replicator(rep ? rep : ownedReplicator.get()), access(acc ? acc : &allowAll), queue(1),
           service(config, storage, transcoder, *replicator, metrics, queue),
@@ -365,4 +367,33 @@ TEST(Api, SegmentCachePreservesRangeAndInvalidatesReplicas) {
     auto removed = c.Get(segment);
     ASSERT_TRUE(removed);
     EXPECT_EQ(removed->status, 404);
+}
+
+TEST(Api, ConfigurableFileChunksPreserveContentAndRanges) {
+    std::string payload(1024 * 1024 + 37, '\0');
+    for (std::size_t i = 0; i < payload.size(); ++i)
+        payload[i] = static_cast<char>((i * 31 + i / 251) % 256);
+    for (std::size_t kib : {64u, 128u, 256u, 512u, 1024u}) {
+        SCOPED_TRACE(kib);
+        Node n("chunk", 10 * 1024 * 1024, nullptr, nullptr, kib * 1024, 0);
+        auto c = n.client();
+        const httplib::Headers auth{{"X-Tecflix-Token", "secret"}};
+        auto put = c.Put("/internal/replicate/blocks/a.m4s", auth, payload, "application/octet-stream");
+        ASSERT_TRUE(put);
+        ASSERT_EQ(put->status, 200);
+        auto manifest = c.Put("/internal/replicate/blocks/manifest.mpd", auth, "<MPD/>", "application/octet-stream");
+        ASSERT_TRUE(manifest);
+        ASSERT_EQ(manifest->status, 200);
+        auto full = c.Get("/videos/blocks/a.m4s");
+        ASSERT_TRUE(full);
+        EXPECT_EQ(full->status, 200);
+        EXPECT_EQ(full->body, payload);
+        const auto start = kib * 1024 - 13;
+        const auto end = payload.size() - 2;
+        auto range = c.Get("/videos/blocks/a.m4s", {{"Range", "bytes=" + std::to_string(start) + "-" + std::to_string(end)}});
+        ASSERT_TRUE(range);
+        EXPECT_EQ(range->status, 206);
+        EXPECT_EQ(range->body, payload.substr(start, end - start + 1));
+        EXPECT_EQ(range->get_header_value("Content-Range"), "bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" + std::to_string(payload.size()));
+    }
 }

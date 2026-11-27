@@ -226,16 +226,29 @@ static void unsetenv(const char* key) { _putenv_s(key, ""); }
 // ---------------------------------------------------------------- Config
 TEST(Config, TraceSamplingEnv) {
     unsetenv("TECFLIX_TRACE_SAMPLE_RATE");
-    EXPECT_DOUBLE_EQ(Config::fromEnv().traceSampleRate, 1.0);
+    EXPECT_DOUBLE_EQ(Config::fromEnv().traceSampleRate, 0.10);
     for (const auto* value : {"0", "0.10", "1"}) {
         setenv("TECFLIX_TRACE_SAMPLE_RATE", value, 1);
         EXPECT_DOUBLE_EQ(Config::fromEnv().traceSampleRate, std::stod(value));
     }
     for (const auto* value : {"nan", "inf", "-1", "1.01", "abc", "0.1abc"}) {
         setenv("TECFLIX_TRACE_SAMPLE_RATE", value, 1);
-        EXPECT_DOUBLE_EQ(Config::fromEnv().traceSampleRate, 1.0);
+        EXPECT_DOUBLE_EQ(Config::fromEnv().traceSampleRate, 0.10);
     }
     unsetenv("TECFLIX_TRACE_SAMPLE_RATE");
+}
+TEST(Config, FileChunkEnv) {
+    unsetenv("TECFLIX_FILE_CHUNK_KIB");
+    EXPECT_EQ(Config::fromEnv().fileChunkBytes, 64u * 1024);
+    for (const auto* value : {"64", "128", "256", "512", "1024"}) {
+        setenv("TECFLIX_FILE_CHUNK_KIB", value, 1);
+        EXPECT_EQ(Config::fromEnv().fileChunkBytes, std::stoul(value) * 1024);
+    }
+    for (const auto* value : {"0", "-1", "63", "1025", "abc", "256abc"}) {
+        setenv("TECFLIX_FILE_CHUNK_KIB", value, 1);
+        EXPECT_EQ(Config::fromEnv().fileChunkBytes, 64u * 1024);
+    }
+    unsetenv("TECFLIX_FILE_CHUNK_KIB");
 }
 TEST(Config, DefaultsAndEnvOverrides) {
     unsetenv("TECFLIX_PORT");

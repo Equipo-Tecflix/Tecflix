@@ -17,7 +17,8 @@ struct Config {
     int segmentSeconds = 4;               // DASH segment duration
     std::uint64_t maxUploadBytes = 2ULL * 1024 * 1024 * 1024;  // 2 GiB
     std::size_t segmentCacheBytes = 0; // 0 disables application cache
-    double traceSampleRate = 1.0; // successful DASH segment GETs only
+    std::size_t fileChunkBytes = 64 * 1024; // file provider block size
+    double traceSampleRate = 0.10; // successful DASH segment GETs only
     std::string otlpEndpoint; // optional http://collector:4318
     std::string corsOrigin = "*";
 
