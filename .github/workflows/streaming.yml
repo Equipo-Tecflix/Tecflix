@@ -68,6 +68,7 @@ jobs:
           gcovr --root . \
             --filter 'src/' \
             --exclude 'src/main.cpp' \
+            --gcov-ignore-parse-errors=negative_hits.warn \
             --html-details ../coverage.html \
             --xml ../coverage.xml \
             --fail-under-line 90 \
