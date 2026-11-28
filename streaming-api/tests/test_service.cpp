@@ -137,3 +137,69 @@ TEST(Service, ReceiveReplicaStoresFilesAndMarksReadyOnManifest) {
     EXPECT_TRUE(f.service.removeReplica("r"));
     EXPECT_FALSE(f.service.removeReplica("r"));
 }
+
+TEST(Service, PendingPushSurvivesServiceRestart) {
+    TempDir tmp;
+    Config cfg;
+    VideoStorage storage(tmp.path);
+    testsupport::FakeTranscoder transcoder;
+    testsupport::RecordingReplicator repl;
+    PrometheusMetrics metrics;
+    {
+        JobQueue queue(1);
+        StreamingService service(cfg, storage, transcoder, repl, metrics, queue);
+        repl.failFirst = 3;
+        ASSERT_EQ(service.beginUpload("recover"), StreamingService::BeginResult::Ok);
+        std::ofstream(storage.rawPath("recover")) << "raw";
+        service.processJob("recover");
+        EXPECT_EQ(service.status("recover"), VideoStatus::Ready);
+        EXPECT_TRUE(std::filesystem::exists(tmp.path / ".replication/recover.push"));
+    }
+    JobQueue queue(1);
+    StreamingService service(cfg, storage, transcoder, repl, metrics, queue);
+    service.recover();
+    service.retryPending();
+    EXPECT_EQ(repl.replicated, (std::vector<std::string>{"recover"}));
+    EXPECT_FALSE(std::filesystem::exists(tmp.path / ".replication/recover.push"));
+    EXPECT_NE(metrics.render().find("tecflix_replication_recovered_total 1"), std::string::npos);
+}
+
+TEST(Service, DeleteCancelsPushAndRejectsLateReplica) {
+    Fixture f;
+    f.replicator.failFirst = 3;
+    f.putRaw("gone");
+    f.service.processJob("gone");
+    ASSERT_TRUE(f.service.remove("gone"));
+    f.service.retryPending();
+    EXPECT_TRUE(f.replicator.replicated.empty());
+    EXPECT_FALSE(f.service.receiveReplica("gone", "manifest.mpd", "<MPD/>"));
+    EXPECT_EQ(f.service.beginUpload("gone"), StreamingService::BeginResult::Conflict);
+}
+
+TEST(Service, PendingDeleteRetriesAfterFailure) {
+    struct Replicator : IReplicator {
+        bool available = false;
+        bool replicate(const std::string&) override { return true; }
+        bool propagateDelete(const std::string&) override { return available; }
+    } repl;
+    TempDir tmp;
+    Config cfg;
+    VideoStorage storage(tmp.path);
+    testsupport::FakeTranscoder transcoder;
+    PrometheusMetrics metrics;
+    {
+        JobQueue queue(1);
+        StreamingService service(cfg, storage, transcoder, repl, metrics, queue);
+        ASSERT_EQ(service.beginUpload("gone"), StreamingService::BeginResult::Ok);
+        ASSERT_TRUE(service.remove("gone"));
+        EXPECT_TRUE(std::filesystem::exists(tmp.path / ".replication/gone.delete"));
+    }
+    JobQueue queue(1);
+    StreamingService service(cfg, storage, transcoder, repl, metrics, queue);
+    repl.available = true;
+    service.recover();
+    service.retryPending();
+    EXPECT_FALSE(std::filesystem::exists(tmp.path / ".replication/gone.delete"));
+    EXPECT_EQ(service.beginUpload("gone"), StreamingService::BeginResult::Conflict);
+    EXPECT_NE(metrics.render().find("tecflix_replication_recovered_total 1"), std::string::npos);
+}

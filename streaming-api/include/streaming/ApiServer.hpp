@@ -7,6 +7,7 @@
 #include "streaming/Config.hpp"
 #include "streaming/JobQueue.hpp"
 #include "streaming/Metrics.hpp"
+#include "streaming/OtelTrace.hpp"
 #include "streaming/StreamingService.hpp"
 #include "streaming/VideoStorage.hpp"
 
@@ -50,6 +51,7 @@ private:
     IMetrics& metrics_;
     JobQueue& queue_;
     std::function<std::string()> metricsRenderer_;
+    OtelTrace traces_;
     std::unique_ptr<httplib::Server> server_;
 };
 

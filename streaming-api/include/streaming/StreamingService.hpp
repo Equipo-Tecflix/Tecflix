@@ -1,5 +1,8 @@
 #pragma once
 #include <string>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
 
 #include "streaming/Config.hpp"
 #include "streaming/JobQueue.hpp"
@@ -18,6 +21,11 @@ public:
 
     StreamingService(const Config& config, VideoStorage& storage, ITranscoder& transcoder,
                      IReplicator& replicator, IMetrics& metrics, JobQueue& queue);
+
+    ~StreamingService();
+    void startRecovery();
+    void stopRecovery();
+    void retryPending();
 
     /// Reserves the id and creates the folders. Conflict if the video already exists.
     BeginResult beginUpload(const std::string& id);
@@ -42,6 +50,17 @@ public:
 
 private:
     bool schedule(const std::string& id);
+    std::filesystem::path journal(const std::string& id, const char* suffix) const;
+    bool marked(const std::string& id, const char* suffix) const;
+    void mark(const std::string& id, const char* suffix);
+    void clear(const std::string& id, const char* suffix);
+    void updatePending(); // called under stateMutex_
+    void attempt(const std::string& id, bool deletion, bool retry);
+    void recoveryLoop();
+    std::mutex stateMutex_, outboundMutex_, workerMutex_;
+    std::condition_variable workerCv_;
+    std::thread worker_;
+    bool stopping_ = false;
 
     const Config& config_;
     VideoStorage& storage_;

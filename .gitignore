@@ -3,3 +3,25 @@ build/
 out/
 temp_video.json
 correr_mongo.bat
+
+# Persona 3 generated files
+/build-streaming/
+/storage-*/
+/load-results/
+/functional-tests/node_modules/
+/functional-tests/test-results/
+/functional-tests/playwright-report/
+
+# Generated coverage reports
+/coverage-recovery-html/
+/coverage-recovery-final-html/
+/coverage-streaming/
+/coverage-streaming-v2/
+/LastCoverageResults.log
+
+# Generated DASH files in repository root
+/*.m4s
+
+# Local backup archives
+/streaming-api-*.zip
+
