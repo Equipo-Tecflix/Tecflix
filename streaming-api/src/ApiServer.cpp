@@ -17,6 +17,7 @@ using json = nlohmann::json;
 using clock_type = std::chrono::steady_clock;
 
 thread_local clock_type::time_point g_requestStart;
+thread_local std::chrono::system_clock::time_point g_traceStart;
 
 constexpr const char* kIdPattern = "([A-Za-z0-9_-]{1,64})";
 constexpr const char* kFilePattern = "([A-Za-z0-9_][A-Za-z0-9_.-]{0,127})";
@@ -32,19 +33,18 @@ std::string contentTypeFor(const std::string& file) {
     return "video/mp4";
 }
 
-/// Streams a file in 64 KiB chunks. The size is declared up-front so httplib can
+/// Streams a file in configurable chunks. The size is declared up-front so httplib can
 /// answer "Range: bytes=a-b" requests (206 Partial Content) by itself.
 void sendFile(httplib::Response& res, const std::filesystem::path& path, const std::string& type,
-              IMetrics& metrics) {
+              IMetrics& metrics, std::size_t chunkBytes) {
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
     auto in = std::make_shared<std::ifstream>(path, std::ios::binary);
     if (ec || !*in) return sendJson(res, 404, {{"error", "file not found"}});
     res.set_content_provider(
         static_cast<std::size_t>(size), type,
-        [in, &metrics](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
-            constexpr std::size_t kChunk = 64 * 1024;
-            std::vector<char> buffer(std::min(length, kChunk));
+        [in, &metrics, chunkBytes](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+            std::vector<char> buffer(std::min(length, chunkBytes));
             in->clear();
             in->seekg(static_cast<std::streamoff>(offset));
             in->read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
@@ -76,6 +76,7 @@ ApiServer::ApiServer(const Config& config, StreamingService& service, VideoStora
                      std::function<std::string()> metricsRenderer)
     : config_(config), service_(service), storage_(storage), access_(access), metrics_(metrics),
       queue_(queue), metricsRenderer_(std::move(metricsRenderer)),
+      traces_(config.otlpEndpoint, config.nodeId, config.traceSampleRate),
       server_(std::make_unique<httplib::Server>()) {
     registerRoutes();
 }
@@ -97,11 +98,18 @@ void ApiServer::registerRoutes() {
     // Our own byte counter enforces maxUploadBytes (-> 413); httplib's limit is only a
     // hard safety net with 1 MiB of slack for multipart framing.
     svr.set_payload_max_length(static_cast<std::size_t>(config_.maxUploadBytes) + 1024 * 1024);
-    svr.set_keep_alive_max_count(1000);
+    svr.set_keep_alive_max_count(1);
+    svr.set_keep_alive_timeout(1);
+
+    // Explicit HTTP worker pool.
+    svr.new_task_queue = [] {
+        return new httplib::ThreadPool(32);
+    };
 
     // ---- cross-cutting: timing, metrics, CORS --------------------------------
     svr.set_pre_routing_handler([](const httplib::Request&, httplib::Response&) {
         g_requestStart = clock_type::now();
+        g_traceStart = std::chrono::system_clock::now();
         return httplib::Server::HandlerResponse::Unhandled;
     });
     svr.set_post_routing_handler([this](const httplib::Request&, httplib::Response& res) {
@@ -112,6 +120,11 @@ void ApiServer::registerRoutes() {
     svr.set_logger([this](const httplib::Request& req, const httplib::Response& res) {
         const double seconds = std::chrono::duration<double>(clock_type::now() - g_requestStart).count();
         const std::string route = routeLabel(req.method, req.path);
+        if (req.path != "/health" && req.path != "/metrics") {
+            const bool segment = route == "/videos/{id}/{file}" && req.path.size() > 4 &&
+                req.path.compare(req.path.size() - 4, 4, ".m4s") == 0;
+            traces_.record(req.method, route, res.status, g_traceStart, segment);
+        }
         Labels labels{{"method", req.method}, {"route", route}, {"status", std::to_string(res.status)}};
         metrics_.incCounter("tecflix_http_requests_total", labels);
         metrics_.observe("tecflix_http_request_duration_seconds", {{"route", route}, {"method", req.method}}, seconds);
@@ -137,7 +150,7 @@ void ApiServer::registerRoutes() {
     });
 
     svr.Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
-        res.set_content(metricsRenderer_(), "text/plain; version=0.0.4");
+        res.set_content(metricsRenderer_() + traces_.renderMetrics(), "text/plain; version=0.0.4");
     });
 
     // ---- upload ----------------------------------------------------------------
@@ -219,7 +232,24 @@ void ApiServer::registerRoutes() {
         const bool manifest = req.matches[3] == "mpd";
         res.set_header("Cache-Control", manifest ? "private, max-age=60" : "private, max-age=3600");
         res.set_header("Accept-Ranges", "bytes");
-        sendFile(res, *path, contentTypeFor(file), metrics_);
+        if (req.matches[3] == "m4s") {
+            auto cached = storage_.cachedSegment(id, file);
+            using CR = VideoStorage::CacheResult;
+            const char* result = cached.result == CR::Hit ? "hit" :
+                                 cached.result == CR::Miss ? "miss" : "bypass";
+            metrics_.incCounter("tecflix_segment_cache_requests_total", {{"result", result}});
+            if (cached.data) {
+                const auto size = cached.data->size();
+                res.set_content_provider(size, contentTypeFor(file),
+                    [data = std::move(cached.data), this](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+                        const auto count = std::min(length, std::size_t(64 * 1024));
+                        metrics_.incCounter("tecflix_bytes_served_total", {}, static_cast<double>(count));
+                        return sink.write(data->data() + offset, count);
+                    });
+                return;
+            }
+        }
+        sendFile(res, *path, contentTypeFor(file), metrics_, config_.fileChunkBytes);
     });
 
     // ---- internal replication (V2.0) -------------------------------------------
@@ -242,3 +272,6 @@ void ApiServer::registerRoutes() {
 }
 
 }  // namespace tecflix
+
+
+

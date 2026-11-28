@@ -23,7 +23,11 @@ int main() {
     using namespace tecflix;
     const Config config = Config::fromEnv();
 
-    VideoStorage storage(config.storageDir);
+    if (!config.peers.empty() && config.internalToken.empty()) {
+        std::cerr << "TECFLIX_INTERNAL_TOKEN required for replication\n";
+        return 1;
+    }
+    VideoStorage storage(config.storageDir, config.segmentCacheBytes);
     PrometheusMetrics metrics;
     FfmpegTranscoder transcoder(config.ffmpegPath);
 
@@ -44,15 +48,24 @@ int main() {
     std::signal(SIGTERM, onSignal);
 
     const std::size_t requeued = service.recover();
+    service.startRecovery();
     std::cout << "[" << config.nodeId << "] Tecflix streaming API on :" << config.port
               << " storage=" << config.storageDir << " peers=" << config.peers.size()
               << " auth=" << (config.metadataUrl.empty() ? "off" : "metadata-api")
+              << " cache_bytes=" << config.segmentCacheBytes
+              << " file_chunk_bytes=" << config.fileChunkBytes
+              << " trace_sample_rate=" << config.traceSampleRate
+              << " traces=" << (config.otlpEndpoint.empty() ? "off" : "on")
+              << " replication_retry_seconds=" << config.replicationRetrySeconds
               << " requeued=" << requeued << std::endl;
 
     if (!server.listen()) {
         std::cerr << "cannot bind port " << config.port << std::endl;
+        service.stopRecovery();
+        queue.shutdown();
         return 1;
     }
+    service.stopRecovery();
     queue.shutdown();
     return 0;
 }

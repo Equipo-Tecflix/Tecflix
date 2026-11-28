@@ -1,6 +1,7 @@
 #include "streaming/Config.hpp"
 
 #include <cstdlib>
+#include <cmath>
 #include <sstream>
 
 namespace tecflix {
@@ -31,8 +32,21 @@ Config Config::fromEnv() {
     if (c.maxTranscodeJobs == 0) c.maxTranscodeJobs = 1;
     c.segmentSeconds = static_cast<int>(envNumber("TECFLIX_SEGMENT_SECONDS", c.segmentSeconds));
     c.maxUploadBytes = envNumber("TECFLIX_MAX_UPLOAD_BYTES", c.maxUploadBytes);
+    const auto cacheMiB = envNumber("TECFLIX_SEGMENT_CACHE_MIB", 0);
+    c.segmentCacheBytes = static_cast<std::size_t>(cacheMiB <= 1024 ? cacheMiB : 0) * 1024 * 1024;
+    const auto chunkKiB = envNumber("TECFLIX_FILE_CHUNK_KIB", 1024);
+    if (chunkKiB >= 64 && chunkKiB <= 1024)
+        c.fileChunkBytes = static_cast<std::size_t>(chunkKiB) * 1024;
+    const auto rate = env("TECFLIX_TRACE_SAMPLE_RATE", "0.10");
+    char* end = nullptr;
+    const double parsed = std::strtod(rate.c_str(), &end);
+    if (end != rate.c_str() && *end == '\0' && std::isfinite(parsed) && parsed >= 0 && parsed <= 1)
+        c.traceSampleRate = parsed;
+    c.otlpEndpoint = env("TECFLIX_OTLP_ENDPOINT", "");
     c.corsOrigin = env("TECFLIX_CORS_ORIGIN", c.corsOrigin);
     c.metadataUrl = env("TECFLIX_METADATA_URL", "");
+    const auto retry = envNumber("TECFLIX_REPLICATION_RETRY_SECONDS", 5);
+    if (retry >= 1 && retry <= 300) c.replicationRetrySeconds = static_cast<int>(retry);
     c.internalToken = env("TECFLIX_INTERNAL_TOKEN", "");
 
     std::stringstream peers(env("TECFLIX_PEERS", ""));

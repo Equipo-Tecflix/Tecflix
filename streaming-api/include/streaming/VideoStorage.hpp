@@ -1,5 +1,10 @@
 #pragma once
 #include <filesystem>
+#include <list>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -20,7 +25,15 @@ VideoStatus statusFromString(const std::string& text);
 /// component can build a path outside <root> (path traversal protection).
 class VideoStorage {
 public:
-    explicit VideoStorage(std::filesystem::path root);
+    explicit VideoStorage(std::filesystem::path root, std::size_t cacheBytes = 64 * 1024 * 1024);
+
+    enum class CacheResult { Hit, Miss, Bypass };
+    struct CachedSegment {
+        std::shared_ptr<const std::string> data;
+        CacheResult result;
+    };
+    CachedSegment cachedSegment(const std::string& id, const std::string& name);
+
 
     static bool isValidId(const std::string& id);
     static bool isValidFileName(const std::string& name);
@@ -49,7 +62,19 @@ public:
     std::vector<std::string> listVideoIds() const;
 
 private:
+    using CacheKey = std::pair<std::string, std::string>;
+    struct CacheEntry {
+        CacheKey key;
+        std::shared_ptr<const std::string> data;
+    };
+    void invalidateLocked(const std::string& id);
+    void evictLastLocked();
     std::filesystem::path root_;
+    const std::size_t cacheCapacity_;
+    std::size_t cacheUsed_ = 0;
+    std::mutex cacheMutex_;
+    std::list<CacheEntry> cacheLru_;
+    std::map<CacheKey, std::list<CacheEntry>::iterator> cacheIndex_;
 };
 
 }  // namespace tecflix

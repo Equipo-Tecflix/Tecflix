@@ -14,16 +14,25 @@ option(TECFLIX_BUILD_TESTS "Build unit/integration tests" ON)
 find_package(Threads REQUIRED)
 
 add_library(tecflix_core STATIC
-  src/Config.cpp src/Metrics.cpp src/VideoStorage.cpp src/Transcoder.cpp
+  src/Config.cpp src/OtelTrace.cpp src/Metrics.cpp src/VideoStorage.cpp src/Transcoder.cpp
   src/JobQueue.cpp src/AccessChecker.cpp src/Replicator.cpp
   src/StreamingService.cpp src/ApiServer.cpp)
 target_include_directories(tecflix_core PUBLIC include third_party)
-target_compile_options(tecflix_core PRIVATE -Wall -Wextra)
+if(MSVC)
+  target_compile_options(tecflix_core PUBLIC /bigobj /utf-8 PRIVATE /W4)
+  target_compile_definitions(tecflix_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601)
+  target_link_libraries(tecflix_core PUBLIC ws2_32)
+else()
+  target_compile_options(tecflix_core PRIVATE -Wall -Wextra)
+endif()
 target_link_libraries(tecflix_core PUBLIC Threads::Threads)
 
 add_executable(tecflix_streaming src/main.cpp)
 target_link_libraries(tecflix_streaming PRIVATE tecflix_core)
 
+if(TECFLIX_COVERAGE AND MSVC)
+  message(FATAL_ERROR "gcov coverage requires GCC; use Linux CI for coverage")
+endif()
 if(TECFLIX_COVERAGE)
   target_compile_options(tecflix_core PUBLIC --coverage -O0 -g)
   target_link_options(tecflix_core PUBLIC --coverage)
@@ -44,3 +53,8 @@ if(TECFLIX_BUILD_TESTS)
   include(GoogleTest)
   gtest_discover_tests(tecflix_tests DISCOVERY_TIMEOUT 60)
 endif()
+
+# Increase TCP pending connection backlog.
+target_compile_definitions(tecflix_core PUBLIC
+    CPPHTTPLIB_LISTEN_BACKLOG=512
+)
