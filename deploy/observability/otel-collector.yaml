@@ -1,29 +1,41 @@
-# Run with the Windows build of opentelemetry-collector-contrib.
 receivers:
   otlp:
     protocols:
       http:
         endpoint: 127.0.0.1:4318
+
   prometheus:
     config:
       scrape_configs:
-        - job_name: tecflix
+        - job_name: tecflix-streaming
           scrape_interval: 5s
+
           static_configs:
-            - targets: ['127.0.0.1:8083'] # add the second machine:8083 for V2
+            - targets: ['127.0.0.1:8083']
+              labels:
+                node: 'A'
+
+            - targets: ['127.0.0.1:8084']
+              labels:
+                node: 'B'
+
 processors:
   batch: {}
+
 exporters:
   debug:
     verbosity: normal
+
   prometheus:
     endpoint: 127.0.0.1:9464
+
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
       exporters: [debug]
+
     metrics:
       receivers: [prometheus]
       processors: [batch]

@@ -1,43 +1,325 @@
+
 <!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
-  <title>Tecflix – prueba de reproducción DASH</title>
-  <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.7.11/dist/shaka-player.compiled.js"></script>
-  <style>body{font-family:sans-serif;max-width:900px;margin:2rem auto}video{width:100%;background:#000}</style>
-</head>
-<body>
-  <h1>Prueba de reproducción (Shaka Player)</h1>
-  <label>API: <input id="api" size="30" value="http://localhost:8083"></label>
-  <label>API alternativa (opcional): <input id="backup" size="30"></label><br>
-  <label>Video id: <input id="vid" size="16" value="demo1"></label>
-  <button id="go">Reproducir</button>
-  <p id="msg"></p>
-  <video id="video" controls autoplay></video>
-  <script>
-    document.getElementById('go').onclick = async () => {
-      const msg = document.getElementById('msg');
-      shaka.polyfill.installAll();
-      if (!shaka.Player.isBrowserSupported()) { msg.textContent = 'Navegador no soportado'; return; }
-      if (window.activePlayer) await window.activePlayer.destroy();
-      const player = new shaka.Player();
-      window.activePlayer = player;
-      await player.attach(document.getElementById('video'));
-      player.addEventListener('error', e => msg.textContent = 'Error Shaka: ' + e.detail.code);
-      const base = document.getElementById('api').value.replace(/\/$/, '');
-      const backup = document.getElementById('backup').value.replace(/\/$/, '');
-      if (backup) player.getNetworkingEngine().registerRequestFilter((type, request) => {
-        if (![shaka.net.NetworkingEngine.RequestType.MANIFEST, shaka.net.NetworkingEngine.RequestType.SEGMENT].includes(type)) return;
-        const original = request.uris.slice();
-        for (const uri of original) {
-          if (uri.startsWith(base + '/')) request.uris.push(backup + uri.slice(base.length));
-          else if (uri.startsWith(backup + '/')) request.uris.push(base + uri.slice(backup.length));
+    <meta charset="utf-8">
+    <title>Tecflix - Prueba de redundancia DASH</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.7.11/dist/shaka-player.compiled.js"></script>
+
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 900px;
+            margin: 2rem auto;
         }
-      });
-      const url = `${base}/videos/${document.getElementById('vid').value}/manifest.mpd`;
-      try { await player.load(url); msg.textContent = 'Reproduciendo ' + url; }
-      catch (e) { msg.textContent = 'No se pudo cargar: ' + (e.code || e); }
-    };
-  </script>
+
+        video {
+            width: 100%;
+            background: #000;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 10px;
+        }
+
+        input {
+            padding: 5px;
+        }
+
+        button {
+            padding: 8px 15px;
+        }
+
+        #stats {
+            border: 1px solid #aaa;
+            padding: 12px;
+            margin: 15px 0;
+        }
+
+        #events {
+            height: 150px;
+            overflow: auto;
+            background: #eee;
+            padding: 10px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body>
+
+<h1>Tecflix - Redundancia de Streaming</h1>
+
+<label>
+    Balanceador principal:
+    <input id="api" size="35"
+           value="http://127.0.0.1:8080">
+</label>
+
+<label>
+    Balanceador alternativo:
+    <input id="backup" size="35"
+           value="http://127.0.0.1:8081">
+</label>
+
+<label>
+    Video ID:
+    <input id="vid" size="25"
+           value="failover-test-01">
+</label>
+
+<button id="go">Reproducir</button>
+
+<p id="msg">Esperando reproduccion.</p>
+
+<div id="stats">
+    <p>Balanceador activo:
+        <strong id="active">--</strong>
+    </p>
+
+    <p>Conmutaciones:
+        <strong id="switches">0</strong>
+    </p>
+
+    <p>Segmentos recibidos:
+        <strong id="segments">0</strong>
+    </p>
+
+    <p>Tiempo de reproduccion:
+        <strong id="position">0.00 s</strong>
+    </p>
+</div>
+
+<video id="video" controls autoplay muted></video>
+
+<h3>Registro de eventos</h3>
+
+<pre id="events"></pre>
+
+<script>
+
+const video = document.getElementById('video');
+const msg = document.getElementById('msg');
+const events = document.getElementById('events');
+const go = document.getElementById('go');
+
+let activePlayer = null;
+
+function log(message) {
+    const time = new Date().toLocaleTimeString();
+
+    events.textContent += `[${time}] ${message}\n`;
+    events.scrollTop = events.scrollHeight;
+
+    console.log(message);
+}
+
+video.addEventListener('timeupdate', () => {
+    document.getElementById('position').textContent =
+        video.currentTime.toFixed(2) + ' s';
+});
+
+video.addEventListener('waiting', () => {
+    log('Esperando datos del video');
+});
+
+video.addEventListener('playing', () => {
+    log('Reproduccion activa');
+});
+
+video.addEventListener('ended', () => {
+    msg.textContent = 'Reproduccion completada';
+    log('Video finalizado correctamente');
+});
+
+go.onclick = async () => {
+
+    go.disabled = true;
+
+    try {
+        shaka.polyfill.installAll();
+
+        if (!shaka.Player.isBrowserSupported()) {
+            msg.textContent = 'Navegador no soportado';
+            return;
+        }
+
+        const primary = document.getElementById('api')
+            .value.trim().replace(/\/+$/, '');
+
+        const backup = document.getElementById('backup')
+            .value.trim().replace(/\/+$/, '');
+
+        const videoId = document.getElementById('vid')
+            .value.trim();
+
+        const endpoints = [...new Set(
+            [primary, backup].filter(Boolean)
+        )];
+
+        let preferred = primary;
+        let lastSuccessful = null;
+        let switches = 0;
+        let segments = 0;
+
+        if (activePlayer) {
+            await activePlayer.destroy();
+        }
+
+        events.textContent = '';
+
+        document.getElementById('active').textContent = '--';
+        document.getElementById('switches').textContent = '0';
+        document.getElementById('segments').textContent = '0';
+
+        const player = new shaka.Player();
+
+        activePlayer = player;
+
+        await player.attach(video);
+
+        const retryParameters = {
+            maxAttempts: 4,
+            baseDelay: 250,
+            backoffFactor: 1.5,
+            fuzzFactor: 0.1,
+            timeout: 5000,
+            connectionTimeout: 2000,
+            stallTimeout: 3000
+        };
+
+        player.configure({
+            manifest: {
+                retryParameters
+            },
+            streaming: {
+                retryParameters,
+                bufferingGoal: 20,
+                rebufferingGoal: 2
+            }
+        });
+
+        player.addEventListener('error', event => {
+            log('Error Shaka: ' + event.detail.code);
+            msg.textContent =
+                'Error Shaka: ' + event.detail.code;
+        });
+
+        const networking = player.getNetworkingEngine();
+
+        const Type =
+            shaka.net.NetworkingEngine.RequestType;
+
+        networking.registerRequestFilter((type, request) => {
+
+            if (type !== Type.MANIFEST &&
+                type !== Type.SEGMENT) {
+                return;
+            }
+
+            const alternatives = [];
+
+            const ordered = [
+                preferred,
+                ...endpoints.filter(e => e !== preferred)
+            ];
+
+            for (const uri of request.uris) {
+
+                const source = endpoints.find(
+                    e => uri.startsWith(e + '/')
+                );
+
+                if (!source) {
+                    alternatives.push(uri);
+                    continue;
+                }
+
+                const suffix = uri.slice(source.length);
+
+                for (const endpoint of ordered) {
+                    alternatives.push(endpoint + suffix);
+                }
+            }
+
+            request.uris = [...new Set(alternatives)];
+        });
+
+        networking.registerResponseFilter((type, response) => {
+
+            if (type !== Type.MANIFEST &&
+                type !== Type.SEGMENT) {
+                return;
+            }
+
+            const endpoint = endpoints.find(
+                e => response.uri.startsWith(e + '/')
+            );
+
+            if (endpoint) {
+
+                if (lastSuccessful &&
+                    lastSuccessful !== endpoint) {
+
+                    switches++;
+
+                    log(
+                        'FAILOVER: ' +
+                        lastSuccessful +
+                        ' -> ' +
+                        endpoint
+                    );
+                }
+
+                lastSuccessful = endpoint;
+                preferred = endpoint;
+
+                document.getElementById('active')
+                    .textContent = endpoint;
+
+                document.getElementById('switches')
+                    .textContent = switches;
+            }
+
+            if (type === Type.SEGMENT) {
+
+                segments++;
+
+                document.getElementById('segments')
+                    .textContent = segments;
+            }
+        });
+
+        const manifest =
+            `${primary}/videos/${encodeURIComponent(videoId)}/manifest.mpd`;
+
+        log('Cargando: ' + manifest);
+
+        if (backup) {
+            log('Balanceador alternativo: ' + backup);
+        }
+
+        await player.load(manifest);
+        await video.play();
+
+        msg.textContent = 'Reproduciendo video';
+
+    } catch (error) {
+
+        msg.textContent =
+            'Error: ' + (error.code || error.message || error);
+
+        log(msg.textContent);
+
+    } finally {
+
+        go.disabled = false;
+    }
+};
+
+</script>
+
 </body>
 </html>
