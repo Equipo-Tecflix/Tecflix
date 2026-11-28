@@ -26,7 +26,7 @@ steps.forEach(v => { stages.push({ duration: '30s', target: v }); stages.push({ 
 stages.push({ duration: '30s', target: 0 });
 
 export const options = {
-  scenarios: { load: { executor: 'ramping-vus', startVUs: 1, stages, gracefulRampDown: '15s' } },
+  scenarios: { load: __ENV.FIXED_VUS ? { executor: 'constant-vus', vus: Number(__ENV.FIXED_VUS), duration: __ENV.DURATION || '60s' } : { executor: 'ramping-vus', startVUs: 1, stages, gracefulRampDown: '15s' } },
   thresholds: {
     http_req_failed: ['rate<0.01'],
     http_req_duration: ['p(95)<800'],
@@ -44,7 +44,7 @@ export default function () {
     check(res, { 'upload aceptado (202)': r => r.status === 202 });
     if (res.status >= 500 || res.status === 429 || res.status === 0) rejected.add(1);
     sleep(5);
-    http.del(`${BASE}/videos/${id}`);   // limpiar
+    // No borrar mientras FFmpeg procesa: limpiar los IDs load-* al finalizar manualmente.
     return;
   }
 
@@ -52,7 +52,10 @@ export default function () {
   check(mpd, { 'manifest 200': r => r.status === 200 });
   if (mpd.status !== 200) rejected.add(1);
 
-  http.get(`${BASE}/videos/${VIDEO}/init-${TRACK}.m4s`);
+  if (mpd.status !== 200) { sleep(1); return; }
+  const init = http.get(`${BASE}/videos/${VIDEO}/init-${TRACK}.m4s`);
+  check(init, { 'init 200': r => r.status === 200 });
+  if (init.status !== 200) rejected.add(1);
   for (let n = 1; n <= SEGMENTS; n++) {
     const seg = http.get(`${BASE}/videos/${VIDEO}/chunk-${TRACK}-${String(n).padStart(5, '0')}.m4s`);
     segmentLatency.add(seg.timings.duration);

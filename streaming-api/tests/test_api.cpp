@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <thread>
+#include <chrono>
 
 #include "httplib.h"
 #include "json.hpp"
@@ -31,17 +32,19 @@ struct Node {
     std::thread thread;
     int port = 0;
 
-    static Config makeConfig(const std::string& id, std::uint64_t maxUpload) {
+    static Config makeConfig(const std::string& id, std::uint64_t maxUpload, std::size_t chunkBytes = 64 * 1024) {
         Config c;
         c.nodeId = id;
         c.internalToken = "secret";
         c.maxUploadBytes = maxUpload;
+        c.fileChunkBytes = chunkBytes;
         return c;
     }
 
     explicit Node(const std::string& id = "n1", std::uint64_t maxUpload = 10 * 1024 * 1024,
-                  IReplicator* rep = nullptr, IAccessChecker* acc = nullptr)
-        : config(makeConfig(id, maxUpload)), storage(tmp.path),
+                  IReplicator* rep = nullptr, IAccessChecker* acc = nullptr,
+                  std::size_t chunkBytes = 64 * 1024, std::size_t cacheBytes = 64 * 1024 * 1024)
+        : config(makeConfig(id, maxUpload, chunkBytes)), storage(tmp.path, cacheBytes),
           ownedReplicator(rep ? nullptr : std::make_unique<NullReplicator>()),
           replicator(rep ? rep : ownedReplicator.get()), access(acc ? acc : &allowAll), queue(1),
           service(config, storage, transcoder, *replicator, metrics, queue),
@@ -71,19 +74,64 @@ struct Node {
 
 }  // namespace
 
+
 TEST(Api, HealthAndMetrics) {
     Node n("nodeA");
     auto c = n.client();
+
+    // Verify health endpoint.
     auto h = c.Get("/health");
+
     ASSERT_TRUE(h);
     EXPECT_EQ(h->status, 200);
     EXPECT_EQ(json::parse(h->body)["node"], "nodeA");
     EXPECT_EQ(h->get_header_value("X-Tecflix-Node"), "nodeA");
-    auto m = c.Get("/metrics");
-    ASSERT_TRUE(m);
-    EXPECT_NE(m->body.find("tecflix_http_requests_total"), std::string::npos);
-    EXPECT_NE(m->body.find("route=\"/health\""), std::string::npos);
+
+    // Metrics may be recorded after the HTTP response
+    // has already been received by the client.
+    const auto deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    std::string metricsBody;
+
+    do {
+        auto m = c.Get("/metrics");
+
+        ASSERT_TRUE(m);
+        ASSERT_EQ(m->status, 200);
+
+        metricsBody = m->body;
+
+        const bool hasCounter =
+            metricsBody.find("tecflix_http_requests_total") !=
+            std::string::npos;
+
+        const bool hasHealthRoute =
+            metricsBody.find("route=\"/health\"") !=
+            std::string::npos;
+
+        if (hasCounter && hasHealthRoute) {
+            break;
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(10)
+        );
+
+    } while (std::chrono::steady_clock::now() < deadline);
+
+    EXPECT_NE(
+        metricsBody.find("tecflix_http_requests_total"),
+        std::string::npos
+    ) << metricsBody;
+
+    EXPECT_NE(
+        metricsBody.find("route=\"/health\""),
+        std::string::npos
+    ) << metricsBody;
 }
+
 
 TEST(Api, FullVideoLifecycle) {
     Node n;
@@ -336,4 +384,62 @@ TEST(MetadataAccessChecker, AsksMetadataApiAndForwardsAuthorization) {
 TEST(AllowAllAccessChecker, AllowsEverything) {
     AllowAllAccessChecker a;
     EXPECT_TRUE(a.allowed("x", Permission::Write, ""));
+}
+
+TEST(Api, SegmentCachePreservesRangeAndInvalidatesReplicas) {
+    Node n;
+    auto c = n.client();
+    const httplib::Headers h{{"X-Tecflix-Token", "secret"}};
+    const std::string segment = "/videos/cache/a.m4s";
+    ASSERT_EQ(c.Put("/internal/replicate/cache/a.m4s", h, "abcdef", "application/octet-stream")->status, 200);
+    ASSERT_EQ(c.Put("/internal/replicate/cache/manifest.mpd", h, "<MPD/>", "application/octet-stream")->status, 200);
+    auto first = c.Get(segment);
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first->body, "abcdef");
+    auto range = c.Get(segment, {{"Range", "bytes=1-3"}});
+    ASSERT_TRUE(range);
+    EXPECT_EQ(range->status, 206);
+    EXPECT_EQ(range->body, "bcd");
+    EXPECT_EQ(range->get_header_value("Content-Range"), "bytes 1-3/6");
+    auto metrics = c.Get("/metrics");
+    ASSERT_TRUE(metrics);
+    EXPECT_NE(metrics->body.find("tecflix_segment_cache_requests_total{result=\"miss\"} 1"), std::string::npos);
+    EXPECT_NE(metrics->body.find("tecflix_segment_cache_requests_total{result=\"hit\"} 1"), std::string::npos);
+    ASSERT_EQ(c.Put("/internal/replicate/cache/a.m4s", h, "UVWXYZ", "application/octet-stream")->status, 200);
+    auto replaced = c.Get(segment);
+    ASSERT_TRUE(replaced);
+    EXPECT_EQ(replaced->body, "UVWXYZ");
+    ASSERT_EQ(c.Delete("/internal/replicate/cache", h)->status, 200);
+    auto removed = c.Get(segment);
+    ASSERT_TRUE(removed);
+    EXPECT_EQ(removed->status, 404);
+}
+
+TEST(Api, ConfigurableFileChunksPreserveContentAndRanges) {
+    std::string payload(1024 * 1024 + 37, '\0');
+    for (std::size_t i = 0; i < payload.size(); ++i)
+        payload[i] = static_cast<char>((i * 31 + i / 251) % 256);
+    for (std::size_t kib : {64u, 128u, 256u, 512u, 1024u}) {
+        SCOPED_TRACE(kib);
+        Node n("chunk", 10 * 1024 * 1024, nullptr, nullptr, kib * 1024, 0);
+        auto c = n.client();
+        const httplib::Headers auth{{"X-Tecflix-Token", "secret"}};
+        auto put = c.Put("/internal/replicate/blocks/a.m4s", auth, payload, "application/octet-stream");
+        ASSERT_TRUE(put);
+        ASSERT_EQ(put->status, 200);
+        auto manifest = c.Put("/internal/replicate/blocks/manifest.mpd", auth, "<MPD/>", "application/octet-stream");
+        ASSERT_TRUE(manifest);
+        ASSERT_EQ(manifest->status, 200);
+        auto full = c.Get("/videos/blocks/a.m4s");
+        ASSERT_TRUE(full);
+        EXPECT_EQ(full->status, 200);
+        EXPECT_EQ(full->body, payload);
+        const auto start = kib * 1024 - 13;
+        const auto end = payload.size() - 2;
+        auto range = c.Get("/videos/blocks/a.m4s", {{"Range", "bytes=" + std::to_string(start) + "-" + std::to_string(end)}});
+        ASSERT_TRUE(range);
+        EXPECT_EQ(range->status, 206);
+        EXPECT_EQ(range->body, payload.substr(start, end - start + 1));
+        EXPECT_EQ(range->get_header_value("Content-Range"), "bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" + std::to_string(payload.size()));
+    }
 }

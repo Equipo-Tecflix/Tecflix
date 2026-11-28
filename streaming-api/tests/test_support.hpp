@@ -2,7 +2,13 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#ifdef _WIN32
+#include <process.h>
+#define TECFLIX_TEST_PID _getpid
+#else
 #include <unistd.h>
+#define TECFLIX_TEST_PID getpid
+#endif
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -20,7 +26,7 @@ struct TempDir {
     TempDir() {
         static std::atomic<int> n{0};
         path = std::filesystem::temp_directory_path() /
-               ("tecflix_test_" + std::to_string(::getpid()) + "_" + std::to_string(n++));
+               ("tecflix_test_" + std::to_string(::TECFLIX_TEST_PID()) + "_" + std::to_string(n++));
         std::filesystem::create_directories(path);
     }
     ~TempDir() { std::error_code ec; std::filesystem::remove_all(path, ec); }
