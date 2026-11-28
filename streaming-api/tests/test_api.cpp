@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <thread>
+#include <chrono>
 
 #include "httplib.h"
 #include "json.hpp"
@@ -73,19 +74,64 @@ struct Node {
 
 }  // namespace
 
+
 TEST(Api, HealthAndMetrics) {
     Node n("nodeA");
     auto c = n.client();
+
+    // Verify health endpoint.
     auto h = c.Get("/health");
+
     ASSERT_TRUE(h);
     EXPECT_EQ(h->status, 200);
     EXPECT_EQ(json::parse(h->body)["node"], "nodeA");
     EXPECT_EQ(h->get_header_value("X-Tecflix-Node"), "nodeA");
-    auto m = c.Get("/metrics");
-    ASSERT_TRUE(m);
-    EXPECT_NE(m->body.find("tecflix_http_requests_total"), std::string::npos);
-    EXPECT_NE(m->body.find("route=\"/health\""), std::string::npos);
+
+    // Metrics may be recorded after the HTTP response
+    // has already been received by the client.
+    const auto deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::seconds(2);
+
+    std::string metricsBody;
+
+    do {
+        auto m = c.Get("/metrics");
+
+        ASSERT_TRUE(m);
+        ASSERT_EQ(m->status, 200);
+
+        metricsBody = m->body;
+
+        const bool hasCounter =
+            metricsBody.find("tecflix_http_requests_total") !=
+            std::string::npos;
+
+        const bool hasHealthRoute =
+            metricsBody.find("route=\"/health\"") !=
+            std::string::npos;
+
+        if (hasCounter && hasHealthRoute) {
+            break;
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(10)
+        );
+
+    } while (std::chrono::steady_clock::now() < deadline);
+
+    EXPECT_NE(
+        metricsBody.find("tecflix_http_requests_total"),
+        std::string::npos
+    ) << metricsBody;
+
+    EXPECT_NE(
+        metricsBody.find("route=\"/health\""),
+        std::string::npos
+    ) << metricsBody;
 }
+
 
 TEST(Api, FullVideoLifecycle) {
     Node n;
