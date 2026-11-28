@@ -32,3 +32,19 @@ MODIFICADO  streaming-api/src/VideoStorage.cpp
 MODIFICADO  streaming-api/src/main.cpp
 MODIFICADO  streaming-api/tests/test_core.cpp
 MODIFICADO  streaming-api/tests/test_support.hpp
+
+
+ACTUALIZACIÓN — 27-11-2026
+Registro funcional complementario (no sustituye git log / git diff):
+- Transcoder Windows: directorio de trabajo correcto de FFmpeg.
+- HTTP: pool 32, keep-alive de una solicitud, backlog 512, bloques de lectura configurables.
+- Caché LRU experimental (desactivada), muestreo de trazas y métricas de exportación.
+- Recuperación persistente de réplicas y eliminaciones; pruebas de reinicio y tombstones.
+- CMake: dependencia Threads explícita y compilación sin pruebas.
+- test_api.cpp: espera acotada para validar métricas tras finalizar solicitudes.
+- CI Windows/Linux aprobada en bb6fc7b; package-lock versionado y Playwright.
+- load-tests/streaming.js: contador de solicitudes rechazadas; reportes comparativos locales.
+- run-streaming.ps1: asignación OTLP; run-balancer.ps1: instancias independientes y encabezado de balanceador.
+- player.html: conmutación automática de lectura entre dos URLs; collector: scrape de ambos nodos.
+- SPEC.md, streaming-api/SPEC.md y GUIA_PERSONA3.md: actualización de operación y limitaciones.
+Pendientes: verificar último CI tras cambios de balanceadores, despliegue físico, integración React/metadata, eliminación de SPOF a nivel de sistema y versiones finales coordinadas.

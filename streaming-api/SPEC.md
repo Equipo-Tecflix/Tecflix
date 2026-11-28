@@ -46,19 +46,20 @@ Las interfaces permiten pruebas unitarias con *fakes* (cobertura ≥ 90 %).
 - Dos nodos con la misma configuración, sin estado compartido en memoria.
 - Tras transcodificar, el nodo origen envía a los peers primero los segmentos y **al final** `manifest.mpd`;
   el peer solo marca `ready` al recibir el manifiesto → nunca expone una copia incompleta.
-- Replicación con 3 reintentos; fallos se cuentan en `tecflix_replications_total{result="failed"}`.
+- Replicación con reintentos iniciales y recuperación persistente de operaciones pendientes; fallos se cuentan en `tecflix_replications_total{result="failed"}`.
 - Borrados se propagan a los peers.
 - Al arrancar, `recover()` re-encola transcodificaciones interrumpidas y descarta subidas incompletas.
-- Balanceador nginx (`deploy/nginx.conf`): `least_conn`, `max_fails`, `proxy_next_upstream` (incluye 404
-  por si la réplica aún no llegó). **Limitación conocida:** nginx es un punto único de falla; se mitiga con
-  keepalived/IP virtual o se documenta como riesgo residual en el paper.
+- Dos balanceadores Nginx independientes, cada uno con acceso a ambos nodos (`least_conn`, reintentos ante errores y 404). `scripts/run-balancer.ps1` permite seleccionar puerto e instancia; cada instancia conserva su configuración, PID y registros. `/internal/` se bloquea en el proxy.
+- El reproductor de demostración `scripts/player.html` configura dos URLs y reintentos de manifiestos y segmentos; prioriza la última URL con respuesta exitosa. No requiere reiniciar el reproductor para cambiar de URL. `X-Tecflix-Balancer` y `X-Tecflix-Node` identifican la ruta atendida. El indicador puede alternar por respuestas concurrentes; no es un contador exacto de fallos.
+- Conmutación de lectura probada localmente en ambas direcciones y con caída de API + balanceador. No garantiza ausencia de pausas de buffering. El frontend React debe incorporar el mecanismo, incluyendo autorización. Las escrituras requieren una política independiente de idempotencia y recuperación; no reintentar ciegamente POST.
+- El acceso redundante evita depender de un único proceso Nginx para el reproductor de prueba. La tolerancia a pérdida de una máquina física y la eliminación de SPOF de todo Tecflix aún deben validarse.
 - Mongo (replica set) y archivo binario de usuarios: coordinar con Personas 1 y 2.
 
 ## 7. Observabilidad
 Métricas: `tecflix_http_requests_total`, `tecflix_http_request_duration_seconds` (histograma por ruta),
 `tecflix_bytes_served_total`, `tecflix_transcode_duration_seconds`, `tecflix_transcodes_total`,
 `tecflix_transcode_queue_size`, `tecflix_uploads_total`, `tecflix_replications_total`.
-El OpenTelemetry Collector Contrib recibe métricas por su receptor Prometheus (scrape de `/metrics`) y trazas HTTP independientes por OTLP/HTTP JSON (`TECFLIX_OTLP_ENDPOINT`). Exportación de trazas en lotes, cola de 2048 entradas, sin bloquear el servidor. Configuraciones en `deploy/observability/`. No incluye propagación de contexto distribuido ni garantiza entrega de telemetría si el collector falla.
+El OpenTelemetry Collector Contrib recibe métricas por su receptor Prometheus (scrape de `/metrics`) y trazas HTTP independientes por OTLP/HTTP JSON (`TECFLIX_OTLP_ENDPOINT`). Exportación de trazas en lotes, cola de 2048 entradas, sin bloquear el servidor. Configuraciones en `deploy/observability/`. En local el collector consulta A:8083 y B:8084; Prometheus consulta el exporter en 9464. Para despliegue físico ajustar destinos y alcance de escucha OTLP; restringir por firewall. El collector central no es redundante. No incluye propagación de contexto distribuido ni garantiza entrega de telemetría si el collector falla.
 
 ## 8. Configuración (variables de entorno)
 `TECFLIX_PORT` (8083), `TECFLIX_NODE_ID`, `TECFLIX_STORAGE_DIR` (./storage), `TECFLIX_FFMPEG`,
@@ -67,7 +68,7 @@ El OpenTelemetry Collector Contrib recibe métricas por su receptor Prometheus (
 `TECFLIX_INTERNAL_TOKEN`, `TECFLIX_OTLP_ENDPOINT` (opcional).
 
 ## 9. Verificación y V2.0
-Scripts PowerShell en `scripts/`, pruebas k6 de carga constante y Playwright de reproducción real. La CI exige 90% de cobertura de las fuentes de la biblioteca en Linux; se excluye `main.cpp` y la rama Windows no se mide. Para tolerar la caída del balanceador, desplegar uno por máquina y configurar URLs principal y alternativa en el cliente Shaka (demo incluido). La integración del frontend final y la redundancia de las otras APIs requieren coordinación del equipo. Replicación inicial de videos con reintentos inmediatos, recuperación automática de pendientes y reparación manual de respaldo; no es almacenamiento distribuido con consenso ni tolera pérdida del origen antes de completar una réplica.
+Scripts PowerShell en `scripts/`, pruebas k6 de carga constante y Playwright de reproducción real. La CI exige 90% de cobertura de las fuentes de la biblioteca en Linux; se excluye `main.cpp` y la rama Windows no se mide. Para tolerar la caída del balanceador, desplegar uno por máquina y configurar URLs principal y alternativa en el cliente Shaka (demo incluido). El workflow aprobado en el commit bb6fc7b ejecuta pruebas Windows y Linux, cobertura Linux y Playwright; las nuevas pruebas de caída de balanceadores son manuales y no están automatizadas en ese workflow. La integración del frontend final y la redundancia de las otras APIs requieren coordinación del equipo. Replicación inicial de videos con reintentos inmediatos, recuperación automática de pendientes y reparación manual de respaldo; no es almacenamiento distribuido con consenso ni tolera pérdida del origen antes de completar una réplica.
 
 ### V2: caché de segmentos en memoria (optimización experimental)
 
@@ -84,4 +85,8 @@ Métrica: `tecflix_segment_cache_requests_total{result="hit|miss|bypass"}` (miss
 
 ### Recuperación de replicaciones V2 (dos nodos, IDs inmutables)
 
-Las operaciones pendientes se conservan en `<storage>/.replication` mediante archivos `.push` y `.delete`; un worker espera `TECFLIX_REPLICATION_RETRY_SECONDS` entre rondas de reintentos (5 por defecto, 1–300); la duración de cada ronda depende de los timeouts y de los archivos. Se reenvía el conjunto DASH con manifiesto al final. Las eliminaciones conservan un marcador `.tombstone` incluso si el ID no existía en el receptor; no se permite reutilizar IDs eliminados, para impedir que una transferencia atrasada los recree. No borrar estos marcadores mientras existan réplicas atrasadas. Las métricas `tecflix_replication_pending`, `tecflix_replication_retries_total`, `tecflix_replication_recovered_total` y `tecflix_replication_deletes_total` permiten supervisar la recuperación. Se mantienen las trazas HTTP existentes; no se añaden spans salientes específicos. El registro persiste ante reinicio ordinario del proceso; no garantiza durabilidad ante pérdida de disco o energía. No reconcilia videos históricos sin marcador ni resuelve escrituras concurrentes del mismo ID en ambos nodos, cambios de topología o particiones con conflictos de metadata.
+Las operaciones pendientes se conservan en `<storage>/.replication` mediante marcadores persistentes de operaciones pendientes (por ejemplo `.push`; no depender de los nombres internos para operar el servicio); un worker espera `TECFLIX_REPLICATION_RETRY_SECONDS` entre rondas de reintentos (5 por defecto, 1–300); la duración de cada ronda depende de los timeouts y de los archivos. Se reenvía el conjunto DASH con manifiesto al final. Las eliminaciones conservan un marcador `.tombstone` incluso si el ID no existía en el receptor; no se permite reutilizar IDs eliminados, para impedir que una transferencia atrasada los recree. No borrar estos marcadores mientras existan réplicas atrasadas. Las métricas `tecflix_replication_pending`, `tecflix_replication_retries_total`, `tecflix_replication_recovered_total` y `tecflix_replication_deletes_total` permiten supervisar la recuperación. Se mantienen las trazas HTTP existentes; no se añaden spans salientes específicos. El registro persiste ante reinicio ordinario del proceso; no garantiza durabilidad ante pérdida de disco o energía. No reconcilia videos históricos sin marcador ni resuelve escrituras concurrentes del mismo ID en ambos nodos, cambios de topología o particiones con conflictos de metadata.
+
+### Configuración de rendimiento adoptada
+
+Pool HTTP de 32 hilos por instancia, keep-alive limitado a una solicitud por conexión y timeout de 1 s, backlog TCP 512, muestreo de trazas de segmentos 0.10 y bloque de lectura 1024 KiB. Caché RAM desactivada por defecto. Estos valores son decisiones experimentales del entorno local, no garantías de escalabilidad. Ver [GUIA_PERSONA3.md](../GUIA_PERSONA3.md) y evidencias de carga.
